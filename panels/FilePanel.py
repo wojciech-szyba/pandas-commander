@@ -90,6 +90,9 @@ class FilePanel(Vertical):
             items = []
 
         for item in items:
+            # Hide editor autosave sidecars (.name.autosave) from the listing.
+            if item.name.endswith(".autosave"):
+                continue
             is_dir = _safe_is_dir(item)
             try:
                 st = item.lstat()

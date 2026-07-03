@@ -75,9 +75,16 @@ class EditorPanel(Vertical):
 
     _RUNNABLE_SUFFIXES = {".py", ".pandas", ".polars"}
 
+    # How often the open file is auto-backed-up, in seconds.
+    AUTOSAVE_INTERVAL = 60
+
     def __init__(self) -> None:
         super().__init__(id="right")
         self.current_path: Path | None = None
+        # Content currently persisted in the real file (set on load / manual save).
+        self._last_saved_text: str = ""
+        # Content last written to the .autosave sidecar (avoids rewriting it unchanged).
+        self._last_autosaved_text: str = ""
 
     def compose(self) -> ComposeResult:
         yield Static("", id="ep-header")
@@ -93,6 +100,7 @@ class EditorPanel(Vertical):
         self.query_one("#ep-area", TextArea).display = False
         self.query_one("#ep-result-header", Static).display = False
         self.query_one("#ep-result-table", DataTable).display = False
+        self.set_interval(self.AUTOSAVE_INTERVAL, self._autosave)
 
     # ----------------------------------------------------------------- public
     def load_file(self, path: Path) -> None:
@@ -114,6 +122,9 @@ class EditorPanel(Vertical):
 
             area.language = "python" if suffix in [".py", ".pandas", ".polars"] else None
             area.load_text(content)
+            # Freshly loaded content == what is on disk; nothing to auto-back-up yet.
+            self._last_saved_text = content
+            self._last_autosaved_text = content
             placeholder.display = False
             area.display = True
             area.focus()
@@ -230,9 +241,67 @@ class EditorPanel(Vertical):
         text = self.query_one("#ep-area", TextArea).text
         try:
             self.current_path.write_text(text, encoding="utf-8")
+            self._last_saved_text = text
+            self._last_autosaved_text = text
+            self._discard_autosave(self.current_path)
             self.app.notify(f"Saved {self.current_path.name}")
         except OSError as exc:
             self.app.notify(f"Save failed: {exc}", severity="error")
+
+    # --------------------------------------------------------------- autosave
+    @staticmethod
+    def _autosave_path(path: Path) -> Path:
+        """Sidecar backup file for `path` (e.g. foo.pandas -> .foo.pandas.autosave)."""
+        return path.with_name(f".{path.name}.autosave")
+
+    def _is_editable(self, path: Path | None) -> bool:
+        """Parquet is a read-only preview, so it is never auto-backed-up."""
+        return path is not None and path.suffix.lower() != ".parquet"
+
+    def _autosave(self) -> None:
+        """Periodically mirror unsaved edits to the sidecar so nothing is lost."""
+        if not self._is_editable(self.current_path):
+            return
+        area = self.query_one("#ep-area", TextArea)
+        if not area.display:
+            return
+        text = area.text
+        # Only write when there are unsaved changes that the sidecar doesn't have yet.
+        if text == self._last_saved_text or text == self._last_autosaved_text:
+            return
+        try:
+            self._autosave_path(self.current_path).write_text(text, encoding="utf-8")
+            self._last_autosaved_text = text
+        except OSError:
+            pass
+
+    def _discard_autosave(self, path: Path) -> None:
+        swap = self._autosave_path(path)
+        try:
+            swap.unlink()
+        except OSError:
+            pass
+
+    def check_autosave_recovery(self) -> str | None:
+        """Return recovered text if a sidecar newer than the current file exists."""
+        if not self._is_editable(self.current_path):
+            return None
+        swap = self._autosave_path(self.current_path)
+        try:
+            if swap.exists() and swap.stat().st_mtime > self.current_path.stat().st_mtime:
+                return swap.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            pass
+        return None
+
+    def apply_recovered_text(self, text: str) -> None:
+        """Load recovered content into the editor (still unsaved vs. the real file)."""
+        self.query_one("#ep-area", TextArea).load_text(text)
+        self._last_autosaved_text = text
+
+    def discard_autosave(self) -> None:
+        if self.current_path is not None:
+            self._discard_autosave(self.current_path)
 
     # ----------------------------------------------------------------- helper
     @staticmethod

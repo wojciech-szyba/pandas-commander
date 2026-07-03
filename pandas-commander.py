@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -24,9 +25,11 @@ from textual.widgets import (
     Footer,
     Input,
     Label,
+    OptionList,
     Static,
     TextArea,
 )
+from textual.widgets.option_list import Option
 
 
 # -------------------------------------------------------------------- splash
@@ -126,6 +129,42 @@ class ConfirmScreen(ModalScreen[bool]):
         self.dismiss(True)
 
 
+class WindowsScreen(ModalScreen[str | None]):
+    """List of open/recent files; Enter opens the highlighted one."""
+
+    BINDINGS = [Binding("escape", "cancel", "Cancel")]
+
+    def __init__(self, recent: list[str], current: str | None) -> None:
+        super().__init__()
+        self.recent = recent
+        self.current = current
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="dialog"):
+            yield Label("Open / recent files")
+            if self.recent:
+                options: list[Option] = []
+                for p in self.recent:
+                    marker = "● " if p == self.current else "  "
+                    label = Text(f"{marker}{Path(p).name}", no_wrap=True)
+                    label.append(f"   {p}", style="dim")
+                    options.append(Option(label, id=p))
+                yield OptionList(*options, id="windows-list")
+            else:
+                yield Label("(no recent files)", id="windows-empty")
+
+    def on_mount(self) -> None:
+        if self.recent:
+            self.query_one(OptionList).focus()
+
+    @on(OptionList.OptionSelected)
+    def _selected(self, event: OptionList.OptionSelected) -> None:
+        self.dismiss(event.option.id)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
 # ----------------------------------------------------------------------- app
 class PandasCommander(App):
     CSS = """
@@ -191,7 +230,9 @@ class PandasCommander(App):
     }
 
     /* modal dialogs */
-    PromptScreen, ConfirmScreen { align: center middle; }
+    PromptScreen, ConfirmScreen, WindowsScreen { align: center middle; }
+    WindowsScreen #dialog { width: 90; }
+    #windows-list { height: auto; max-height: 20; margin-top: 1; }
     #dialog {
         width: 64;
         height: auto;
@@ -208,6 +249,7 @@ class PandasCommander(App):
     BINDINGS = [
         Binding("tab", "switch_panel", "Switch", priority=True),
         Binding("backspace", "up", "Up"),
+        Binding("f2", "windows", "Windows"),
         Binding("f4", "pandas_canvas", "Open in Pandas"),
         Binding("f7", "mkdir", "MkDir"),
         Binding("f8", "delete", "Delete"),
@@ -216,10 +258,15 @@ class PandasCommander(App):
         Binding("ctrl+q", "quit", "Quit"),
     ]
 
+    # Where the recent-files list is persisted between sessions.
+    RECENT_PATH = Path.home() / ".pandas_commander_recent.json"
+    MAX_RECENT = 20
+
     def __init__(self, start_dir: str | None = None) -> None:
         super().__init__()
         self.start_dir = start_dir or os.getcwd()
         self.active_panel: FilePanel | None = None
+        self.recent_files: list[str] = self._load_recent()
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="panels"):
@@ -296,6 +343,16 @@ class PandasCommander(App):
     def action_focus_cmd(self) -> None:
         self.query_one("#cmdline", Input).focus()
 
+    def action_windows(self) -> None:
+        recent = [p for p in self.recent_files if Path(p).exists()]
+        current = str(self.right.current_path) if self.right.current_path else None
+
+        def done(chosen: str | None) -> None:
+            if chosen:
+                self.open_file(Path(chosen))
+
+        self.push_screen(WindowsScreen(recent, current), done)
+
     def action_mkdir(self) -> None:
         panel = self.active_panel
         if panel is None:
@@ -352,12 +409,12 @@ class PandasCommander(App):
                     elif extension == 'parquet':
                         f.write(f'df = pd.read_parquet("{path}")\n')
                     f.write('\nprint(df.head())\n')
-            self.right.load_file(new_path)
+            self.open_file(new_path)
 
     # -------------------------------------------------------- file panel event
     @on(FilePanel.FileSelected)
     def _on_file_selected(self, event: FilePanel.FileSelected) -> None:
-        self.right.load_file(event.path)
+        self.open_file(event.path)
 
     # ------------------------------------------------------------- command line
     @on(Input.Submitted, "#cmdline")
@@ -379,6 +436,51 @@ class PandasCommander(App):
         self.refresh_panels()
         if self.active_panel:
             self.active_panel.query_one(DataTable).focus()
+
+    # ------------------------------------------------------------ open / recent
+    def open_file(self, path: Path) -> None:
+        """Open a file in the editor, record it as recent, and offer autosave recovery."""
+        self.add_recent(path)
+        self.right.load_file(path)
+        recovered = self.right.check_autosave_recovery()
+        if recovered is not None:
+            def done(yes: bool | None) -> None:
+                if yes:
+                    self.right.apply_recovered_text(recovered)
+                    self.notify("Recovered unsaved changes.")
+                else:
+                    self.right.discard_autosave()
+
+            self.push_screen(
+                ConfirmScreen(
+                    f"Unsaved changes found for '{path.name}'. Recover them?"
+                ),
+                done,
+            )
+
+    def add_recent(self, path: Path) -> None:
+        try:
+            s = str(path.resolve())
+        except OSError:
+            s = str(path)
+        self.recent_files = [s] + [p for p in self.recent_files if p != s]
+        del self.recent_files[self.MAX_RECENT:]
+        self._save_recent()
+
+    def _load_recent(self) -> list[str]:
+        try:
+            data = json.loads(self.RECENT_PATH.read_text(encoding="utf-8"))
+            if isinstance(data, list):
+                return [str(p) for p in data]
+        except (OSError, ValueError):
+            pass
+        return []
+
+    def _save_recent(self) -> None:
+        try:
+            self.RECENT_PATH.write_text(json.dumps(self.recent_files), encoding="utf-8")
+        except OSError:
+            pass
 
     # ----------------------------------------------------------------- helpers
     def _selected_file(self) -> tuple[Path, str] | None:
