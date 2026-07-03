@@ -8,3 +8,7 @@ pip install -r requirements.txt
 
 source pandascom/bin/activate
 python3 pandas-commander.py
+
+
+## Demo:
+![Alt text](demo.gif)
