@@ -1,5 +1,5 @@
 # Pandas Commander
-Lightweight Pandas data multitool
+Lightweight os independent Pandas data multitool in one window
 
 ## Features
 - Classic commander file manager (mkdir , new file , delete, open csv/json as panda script - panda code generation)
