@@ -7,6 +7,7 @@ Lightweight os independent Pandas data multitool in one window
 - Polars files editor (view, edit, syntax highlighting , code autocompletion, running)
 - Python files editor (view, edit, syntax highlighting , code autocompletion, running)
 - Handy clasic command line with output in window 
+- Pandas code snippets
 - SQL files editor (read, write, syntax highlighting)
 - Autosave
 - Multiple windows handling
