@@ -30,7 +30,7 @@ def human_size(num: int) -> str:
 class FilePanel(Vertical):
     """Left pane: path header + DataTable directory listing."""
 
-    SUPPORTED_SUFFIXES = {".py", ".csv", ".parquet"}
+    SUPPORTED_SUFFIXES = {".py", ".pandas", ".polars", ".sql", ".csv", ".parquet"}
 
     BINDINGS = [
 

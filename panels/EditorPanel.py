@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import io
+import re
 import traceback
 from pathlib import Path
 
@@ -16,9 +17,80 @@ from textual.widgets import (
     TextArea,
 )
 
+# ------------------------------------------------------------- pandas autocomplete
+# Ghost-text (inline) completion for .py/.pandas files, in priority order — the
+# first candidate that starts with the typed prefix wins. Accepted with the
+# right-arrow key, same as TextArea's built-in suggestion mechanism.
+_PANDAS_TOP_LEVEL = [
+    "DataFrame(", "Series(", "read_csv(", "read_excel(", "read_parquet(",
+    "read_json(", "read_sql(", "read_html(", "read_pickle(", "read_feather(",
+    "read_clipboard(", "read_table(", "concat(", "merge(", "merge_asof(",
+    "merge_ordered(", "pivot_table(", "crosstab(", "cut(", "qcut(",
+    "to_datetime(", "to_numeric(", "to_timedelta(", "date_range(", "isna(",
+    "isnull(", "notna(", "notnull(", "get_dummies(", "melt(", "unique(",
+    "value_counts(", "set_option(", "get_option(", "reset_option(",
+    "Categorical(", "Index(", "MultiIndex(", "Timestamp(", "Timedelta(",
+    "options", "NaT", "NA", "array(",
+]
+
+_DATAFRAME_METHODS = [
+    "head(", "tail(", "info(", "describe(", "shape", "columns", "index",
+    "dtypes", "values", "copy(", "groupby(", "merge(", "join(",
+    "pivot_table(", "pivot(", "melt(", "sort_values(", "sort_index(",
+    "reset_index(", "set_index(", "drop(", "drop_duplicates(", "dropna(",
+    "fillna(", "replace(", "rename(", "astype(", "apply(", "applymap(",
+    "map(", "filter(", "query(", "loc[", "iloc[", "at[", "iat[", "isna(",
+    "isnull(", "notna(", "notnull(", "unique(", "nunique(", "value_counts(",
+    "sample(", "nlargest(", "nsmallest(", "to_csv(", "to_excel(",
+    "to_parquet(", "to_json(", "to_dict(", "to_numpy(", "to_string(",
+    "to_list(", "corr(", "cov(", "mean(", "median(", "mode(", "sum(",
+    "min(", "max(", "std(", "var(", "count(", "cumsum(", "cumprod(",
+    "cummax(", "cummin(", "diff(", "pct_change(", "rolling(", "expanding(",
+    "resample(", "shift(", "clip(", "round(", "abs(", "agg(", "aggregate(",
+    "transform(", "pipe(", "assign(", "explode(", "stack(", "unstack(", "T",
+]
+
+# Identifiers whose attributes are clearly not dataframes, so `.` after them
+# should not offer DataFrame/Series methods.
+_NON_DATAFRAME_NAMES = {
+    "os", "sys", "re", "np", "numpy", "json", "math", "io", "shutil",
+    "subprocess", "pathlib", "Path", "datetime", "time", "self", "logging",
+}
+
+_PANDAS_ALIASES = {"pd", "pandas"}
+
+_DOT_RE = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)?$")
+_IMPORT_RE = re.compile(r"^(\s*)import\s+(\w*)$")
+_FROM_RE = re.compile(r"^(\s*)from\s+(\w*)$")
+
+
+def _match(prefix: str, candidates: list[str]) -> str:
+    """Return the remainder of the first candidate that starts with `prefix`."""
+    for candidate in candidates:
+        if candidate.startswith(prefix) and candidate != prefix:
+            return candidate[len(prefix):]
+    return ""
+
+
+def _pandas_suggestion(line_before_cursor: str) -> str:
+    """Ghost-text suggestion for pandas code, given the text left of the cursor."""
+    if m := _DOT_RE.search(line_before_cursor):
+        obj, prefix = m.group(1), m.group(2) or ""
+        if obj in _PANDAS_ALIASES:
+            return _match(prefix, _PANDAS_TOP_LEVEL)
+        if obj not in _NON_DATAFRAME_NAMES:
+            return _match(prefix, _DATAFRAME_METHODS)
+        return ""
+    if m := _IMPORT_RE.match(line_before_cursor):
+        return _match(m.group(2), ["pandas as pd"])
+    if m := _FROM_RE.match(line_before_cursor):
+        return _match(m.group(2), ["pandas import "])
+    return ""
+
 
 class _DataFrameTextArea(TextArea):
-    """TextArea that yields ctrl+c to the panel's Concat binding for .pandas/.polars files."""
+    """TextArea that yields ctrl+c to the panel's Concat binding for .pandas/.polars files,
+    and offers inline pandas autocomplete for .py/.pandas files."""
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
         if action == "copy":
@@ -27,6 +99,19 @@ class _DataFrameTextArea(TextArea):
                 # Disable copy so ctrl+c bubbles up to EditorPanel's Concat.
                 return None
         return super().check_action(action, parameters)
+
+    def update_suggestion(self) -> None:
+        editor = self.parent
+        path = getattr(editor, "current_path", None)
+        if path is None or path.suffix.lower() not in (".py", ".pandas"):
+            self.suggestion = ""
+            return
+        if self.selection.start != self.selection.end:
+            self.suggestion = ""
+            return
+        row, column = self.cursor_location
+        line = self.get_line(row).plain[:column]
+        self.suggestion = _pandas_suggestion(line)
 
 
 # ---------------------------------------------------------------- EditorPanel
@@ -120,7 +205,12 @@ class EditorPanel(Vertical):
             else:
                 content = path.read_text(encoding="utf-8", errors="replace")
 
-            area.language = "python" if suffix in [".py", ".pandas", ".polars"] else None
+            if suffix in [".py", ".pandas", ".polars"]:
+                area.language = "python"
+            elif suffix == ".sql":
+                area.language = "sql"
+            else:
+                area.language = None
             area.load_text(content)
             # Freshly loaded content == what is on disk; nothing to auto-back-up yet.
             self._last_saved_text = content

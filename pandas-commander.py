@@ -1,17 +1,23 @@
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
 import os
 import shutil
-import subprocess
 import sys
 from panels.EditorPanel import EditorPanel
 from panels.FilePanel import FilePanel
+from screens.splash import SplashScreen
+from screens.prompt import PromptScreen
+from screens.confirm import ConfirmScreen
+from screens.command_output import CommandOutputScreen
+from screens.windows import WindowsScreen
+from screens.about import AboutScreen
 from datetime import datetime
 from pathlib import Path
 
 from rich.text import Text
-
 from textual import on
 from textual.app import App, ComposeResult
 from textual.binding import Binding
@@ -26,144 +32,11 @@ from textual.widgets import (
     Input,
     Label,
     OptionList,
+    RichLog,
     Static,
     TextArea,
 )
 from textual.widgets.option_list import Option
-
-
-# -------------------------------------------------------------------- splash
-class SplashScreen(Screen):
-    CSS = """
-    SplashScreen {
-        align: center middle;
-        background: $surface;
-    }
-    #splash-art {
-        width: auto;
-        height: auto;
-        content-align: center middle;
-        color: $accent;
-    }
-    #splash-hint {
-        dock: bottom;
-        height: 1;
-        content-align: center middle;
-        color: $text-muted;
-    }
-    """
-
-    def compose(self) -> ComposeResult:
-        splash_path = Path(__file__).parent / "splash.txt"
-        yield Static(splash_path.read_text(), id="splash-art")
-        yield Static("Press any key to continue…", id="splash-hint")
-
-    def on_mount(self) -> None:
-        self.set_timer(5.0, self._dismiss)
-
-    def on_key(self) -> None:
-        self._dismiss()
-
-    def _dismiss(self) -> None:
-        self.app.pop_screen()
-
-
-# --------------------------------------------------------------------- modals
-class PromptScreen(ModalScreen[str | None]):
-    """Single-line text prompt (used for mkdir, rename, etc.)."""
-
-    BINDINGS = [Binding("escape", "cancel", "Cancel")]
-
-    def __init__(self, prompt: str, default: str = "") -> None:
-        super().__init__()
-        self.prompt = prompt
-        self.default = default
-
-    def compose(self) -> ComposeResult:
-        with Vertical(id="dialog"):
-            yield Label(self.prompt)
-            yield Input(value=self.default, id="prompt-input")
-
-    def on_mount(self) -> None:
-        self.query_one(Input).focus()
-
-    @on(Input.Submitted)
-    def _submit(self, event: Input.Submitted) -> None:
-        self.dismiss(event.value)
-
-    def action_cancel(self) -> None:
-        self.dismiss(None)
-
-
-class ConfirmScreen(ModalScreen[bool]):
-    """Yes/No confirmation dialog."""
-
-    BINDINGS = [
-        Binding("escape", "no", "Cancel"),
-        Binding("y", "yes", "Yes"),
-        Binding("n", "no", "No"),
-    ]
-
-    def __init__(self, question: str) -> None:
-        super().__init__()
-        self.question = question
-
-    def compose(self) -> ComposeResult:
-        with Vertical(id="dialog"):
-            yield Label(self.question)
-            with Horizontal(id="buttons"):
-                yield Button("Yes", variant="error", id="yes")
-                yield Button("No", variant="primary", id="no")
-
-    def on_mount(self) -> None:
-        self.query_one("#no", Button).focus()
-
-    @on(Button.Pressed)
-    def _pressed(self, event: Button.Pressed) -> None:
-        self.dismiss(event.button.id == "yes")
-
-    def action_no(self) -> None:
-        self.dismiss(False)
-
-    def action_yes(self) -> None:
-        self.dismiss(True)
-
-
-class WindowsScreen(ModalScreen[str | None]):
-    """List of open/recent files; Enter opens the highlighted one."""
-
-    BINDINGS = [Binding("escape", "cancel", "Cancel")]
-
-    def __init__(self, recent: list[str], current: str | None) -> None:
-        super().__init__()
-        self.recent = recent
-        self.current = current
-
-    def compose(self) -> ComposeResult:
-        with Vertical(id="dialog"):
-            yield Label("Open / recent files")
-            if self.recent:
-                options: list[Option] = []
-                for p in self.recent:
-                    marker = "● " if p == self.current else "  "
-                    label = Text(f"{marker}{Path(p).name}", no_wrap=True)
-                    label.append(f"   {p}", style="dim")
-                    options.append(Option(label, id=p))
-                yield OptionList(*options, id="windows-list")
-            else:
-                yield Label("(no recent files)", id="windows-empty")
-
-    def on_mount(self) -> None:
-        if self.recent:
-            self.query_one(OptionList).focus()
-
-    @on(OptionList.OptionSelected)
-    def _selected(self, event: OptionList.OptionSelected) -> None:
-        self.dismiss(event.option.id)
-
-    def action_cancel(self) -> None:
-        self.dismiss(None)
-
 
 # ----------------------------------------------------------------------- app
 class PandasCommander(App):
@@ -230,7 +103,7 @@ class PandasCommander(App):
     }
 
     /* modal dialogs */
-    PromptScreen, ConfirmScreen, WindowsScreen { align: center middle; }
+    PromptScreen, ConfirmScreen, WindowsScreen, AboutScreen { align: center middle; }
     WindowsScreen #dialog { width: 90; }
     #windows-list { height: auto; max-height: 20; margin-top: 1; }
     #dialog {
@@ -242,6 +115,9 @@ class PandasCommander(App):
     }
     #buttons { height: auto; align-horizontal: center; margin-top: 1; }
     #buttons Button { margin: 0 1; }
+    #about-title { text-style: bold; color: $accent; margin-bottom: 1; }
+    #about-version { color: $text-muted; margin-top: 1; }
+    #pandas-version { color: $text-muted; margin-top: 1; }
     
     #viewer-title, #editor-title { height: 1; }
     """
@@ -249,8 +125,10 @@ class PandasCommander(App):
     BINDINGS = [
         Binding("tab", "switch_panel", "Switch", priority=True),
         Binding("backspace", "up", "Up"),
+        Binding("f1", "about", "About"),
         Binding("f2", "windows", "Windows"),
         Binding("f4", "pandas_canvas", "Open in Pandas"),
+        Binding("f5", "new_file", "New"),
         Binding("f7", "mkdir", "MkDir"),
         Binding("f8", "delete", "Delete"),
         Binding("ctrl+l", "focus_cmd", "Cmd"),
@@ -313,7 +191,7 @@ class PandasCommander(App):
 
     # ----------------------------------------------------------------- actions
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
-        if action in ("pandas_canvas", "mkdir", "delete"):
+        if action in ("pandas_canvas", "mkdir", "delete", "new_file"):
             node = self.focused
             while node is not None:
                 if isinstance(node, EditorPanel):
@@ -343,6 +221,9 @@ class PandasCommander(App):
     def action_focus_cmd(self) -> None:
         self.query_one("#cmdline", Input).focus()
 
+    def action_about(self) -> None:
+        self.push_screen(AboutScreen('0.4'))
+
     def action_windows(self) -> None:
         recent = [p for p in self.recent_files if Path(p).exists()]
         current = str(self.right.current_path) if self.right.current_path else None
@@ -369,6 +250,27 @@ class PandasCommander(App):
                 self.notify(f"mkdir failed: {exc}", severity="error")
 
         self.push_screen(PromptScreen("New directory name:"), done)
+
+    def action_new_file(self) -> None:
+        panel = self.active_panel
+        if panel is None:
+            return
+
+        def done(name: str | None) -> None:
+            if not name:
+                return
+            new_path = panel.path / name
+            if new_path.exists():
+                self.notify(f"'{name}' already exists", severity="warning")
+                return
+            try:
+                new_path.touch(exist_ok=False)
+                self.refresh_panels()
+                self.notify(f"Created {name}")
+            except OSError as exc:
+                self.notify(f"Create failed: {exc}", severity="error")
+
+        self.push_screen(PromptScreen("New file name (with extension):"), done)
 
     def action_delete(self) -> None:
         entry = self._selected_real()
@@ -424,18 +326,13 @@ class PandasCommander(App):
         if not cmd:
             return
         cwd = self.active_panel.path if self.active_panel else Path.cwd()
-        try:
-            result = subprocess.run(
-                cmd, shell=True, cwd=str(cwd),
-                capture_output=True, text=True, timeout=30,
-            )
-            output = (result.stdout or "") + (result.stderr or "")
-            output = output or "(no output)"
-        except Exception as exc:  # noqa: BLE001
-            output = f"Error: {exc}"
-        self.refresh_panels()
-        if self.active_panel:
-            self.active_panel.query_one(DataTable).focus()
+
+        def done(_: None) -> None:
+            self.refresh_panels()
+            if self.active_panel:
+                self.active_panel.query_one(DataTable).focus()
+
+        self.push_screen(CommandOutputScreen(cmd, cwd), done)
 
     # ------------------------------------------------------------ open / recent
     def open_file(self, path: Path) -> None:
