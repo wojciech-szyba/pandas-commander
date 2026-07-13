@@ -9,6 +9,7 @@ Pygments==2.20.0
 python-dateutil==2.9.0.post0
 rich==15.0.0
 six==1.17.0
+SQLAlchemy==2.0.51
 textual==8.2.7
 tree-sitter==0.25.2
 tree-sitter-bash==0.25.1
