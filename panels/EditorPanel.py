@@ -105,7 +105,6 @@ class _DataFrameTextArea(TextArea):
     def update_suggestion(self) -> None:
         editor = self.parent
         path = getattr(editor, "current_path", None)
-        if path is None or path.suffix.lower() not in (".py", ".pandas"):
         suffix = path.suffix.lower() if path is not None else ""
         if suffix not in (".py", ".pandas", ".sql"):
             self.suggestion = ""
