@@ -5,6 +5,8 @@ from pathlib import Path
 
 from rich.text import Text
 
+from panels import formats
+
 from textual import on
 from textual.app import ComposeResult
 from textual.containers import Vertical
@@ -30,7 +32,9 @@ def human_size(num: int) -> str:
 class FilePanel(Vertical):
     """Left pane: path header + DataTable directory listing."""
 
-    SUPPORTED_SUFFIXES = {".py", ".pandas", ".polars", ".sql", ".csv", ".parquet"}
+    SUPPORTED_SUFFIXES = (
+        {".py", ".pandas", ".polars", ".sql"} | set(formats.FORMATS) | set(formats.COMPRESSIONS)
+    )
 
     BINDINGS = [
 
