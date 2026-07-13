@@ -8,6 +8,8 @@ from pathlib import Path
 
 from rich.text import Text
 
+from panels import sql_tools
+
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical
@@ -104,6 +106,8 @@ class _DataFrameTextArea(TextArea):
         editor = self.parent
         path = getattr(editor, "current_path", None)
         if path is None or path.suffix.lower() not in (".py", ".pandas"):
+        suffix = path.suffix.lower() if path is not None else ""
+        if suffix not in (".py", ".pandas", ".sql"):
             self.suggestion = ""
             return
         if self.selection.start != self.selection.end:
@@ -111,7 +115,10 @@ class _DataFrameTextArea(TextArea):
             return
         row, column = self.cursor_location
         line = self.get_line(row).plain[:column]
-        self.suggestion = _pandas_suggestion(line)
+        if suffix == ".sql":
+            self.suggestion = sql_tools.sql_suggestion(line)
+        else:
+            self.suggestion = _pandas_suggestion(line)
 
 
 # ---------------------------------------------------------------- EditorPanel
@@ -158,7 +165,7 @@ class EditorPanel(Vertical):
         },
     }
 
-    _RUNNABLE_SUFFIXES = {".py", ".pandas", ".polars"}
+    _RUNNABLE_SUFFIXES = {".py", ".pandas", ".polars", ".sql"}
 
     # How often the open file is auto-backed-up, in seconds.
     AUTOSAVE_INTERVAL = 60
@@ -282,6 +289,10 @@ class EditorPanel(Vertical):
         if self.current_path is None:
             return
 
+        if self.current_path.suffix.lower() == ".sql":
+            self._run_sql()
+            return
+
         code = self.query_one("#ep-area", TextArea).text
         result_table = self.query_one("#ep-result-table", DataTable)
         result_header = self.query_one("#ep-result-header", Static)
@@ -320,6 +331,61 @@ class EditorPanel(Vertical):
         for line in text.splitlines():
             result_table.add_row(line)
         result_header.update("Results" + (" — error" if error else ""))
+
+    # -------------------------------------------------------------- run (SQL)
+    def _run_sql(self) -> None:
+        """Run the open .sql file (or the selection) via SQLAlchemy and show the result."""
+        area = self.query_one("#ep-area", TextArea)
+        result_table = self.query_one("#ep-result-table", DataTable)
+        result_header = self.query_one("#ep-result-header", Static)
+        result_table.clear(columns=True)
+
+        def show_message(text: str, header: str) -> None:
+            result_table.add_column("output")
+            for line in text.splitlines():
+                result_table.add_row(line)
+            result_header.update(header)
+
+        try:
+            url = sql_tools.resolve_connection_url(self.current_path, area.text)
+        except ImportError:
+            show_message(
+                "SQLAlchemy is not installed — cannot run .sql files.\n\n"
+                "Install with:  pip install sqlalchemy",
+                "Results — error",
+            )
+            return
+        except sql_tools.SqlConfigError as exc:
+            show_message(str(exc), "Results — database not configured")
+            self.app.notify(
+                "Configure the target database in db_connections.ini first.",
+                severity="warning",
+            )
+            return
+
+        # Run only the selection when there is one, otherwise the whole file.
+        sql_text = area.selected_text or area.text
+        try:
+            run = sql_tools.run_sql(sql_text, url)
+        except ImportError:
+            show_message(
+                "SQLAlchemy is not installed — cannot run .sql files.\n\n"
+                "Install with:  pip install sqlalchemy",
+                "Results — error",
+            )
+            return
+        except Exception as exc:  # noqa: BLE001 - any DB/driver error goes to Results
+            show_message(str(exc), "Results — error")
+            return
+
+        if run.columns:
+            result_table.add_columns(*run.columns)
+            for row in run.rows:
+                result_table.add_row(*["" if v is None else str(v) for v in row])
+        else:
+            result_table.add_column("output")
+            result_table.add_row(run.summary)
+        result_header.update(f"Results  ({run.summary})")
 
     # ----------------------------------------------------------------- action
     def action_save(self) -> None:
