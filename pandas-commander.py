@@ -311,7 +311,7 @@ class PandasCommander(App):
                 with open(new_path, 'w') as f:
                     f.write('import pandas as pd\n\n')
                     f.write(formats.read_code(path) + '\n')
-                    f.write('\nprint(df.head())\n')
+                    f.write(formats.read_df_head(path))
             self.open_file(new_path)
 
     # -------------------------------------------------------- file panel event
