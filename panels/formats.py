@@ -278,6 +278,15 @@ def read_code(path: Path) -> str:
     return f"{imp}\n\nwith {open_expr} as f:\n    {stream_call}{note}"
 
 
+def read_df_head(path: Path) -> str:
+    posix = path.as_posix()
+    comp, suffix = split_compression(path)
+    
+    if suffix == '.pickle':
+        return '\nprint(df)\n'
+    else:
+        return '\nprint(df.head())\n'
+
 # --------------------------------------------------------------- data loading
 def load_dataframe(path: Path):
     """Load a binary or compressed data file into a DataFrame for the read-only preview."""
