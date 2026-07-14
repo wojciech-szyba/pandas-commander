@@ -6,6 +6,7 @@ import re
 import traceback
 from pathlib import Path
 
+import pyperclip
 from rich.text import Text
 
 from panels import formats, sql_tools
@@ -110,8 +111,17 @@ class _DataFrameTextArea(TextArea):
         if event.button == 3 and not self.read_only:
             # Right click: move the cursor under the pointer and paste there,
             # instead of starting a text-selection drag like the left button does.
-            self.selection = Selection.cursor(self.get_target_document_location(event))
-            self.action_paste()
+            # `action_paste()` reads Textual's own in-app clipboard (only ever
+            # populated by copying inside this app), not the OS clipboard, so
+            # the real system clipboard is fetched directly via pyperclip.
+            try:
+                text = pyperclip.paste()
+            except pyperclip.PyperclipException:
+                text = ""
+            if text:
+                self.selection = Selection.cursor(self.get_target_document_location(event))
+                result = self.replace(text, *self.selection, maintain_selection_offset=False)
+                self.move_cursor(result.end_location)
             event.stop()
             return
         await super()._on_mouse_down(event)
