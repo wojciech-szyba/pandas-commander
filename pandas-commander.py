@@ -6,6 +6,7 @@ import json
 import os
 import shutil
 import sys
+from panels import formats
 from panels.EditorPanel import EditorPanel
 from panels.FilePanel import FilePanel
 from screens.splash import SplashScreen
@@ -300,17 +301,17 @@ class PandasCommander(App):
         path, kind = entry
 
         if kind != "dir":
-            new_path = path.with_suffix(".pandas")
+            base = path
+            # data.csv.gz -> data.pandas (drop the compression suffix first).
+            if base.suffix.lower() in formats.COMPRESSIONS and Path(base.stem).suffix:
+                base = base.with_suffix("")
+            new_path = base.with_suffix(".pandas")
             if not new_path.exists():
                 new_path.touch()
                 with open(new_path, 'w') as f:
                     f.write('import pandas as pd\n\n')
-                    *_, extension = path.name.split('.')
-                    if extension == 'csv':
-                        f.write(f'df = pd.read_csv("{path}")\n')
-                    elif extension == 'parquet':
-                        f.write(f'df = pd.read_parquet("{path}")\n')
-                    f.write('\nprint(df.head())\n')
+                    f.write(formats.read_code(path) + '\n')
+                    f.write(formats.read_df_head(path))
             self.open_file(new_path)
 
     # -------------------------------------------------------- file panel event

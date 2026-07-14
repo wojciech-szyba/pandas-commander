@@ -8,7 +8,7 @@ from pathlib import Path
 
 from rich.text import Text
 
-from panels import sql_tools
+from panels import formats, sql_tools
 
 from textual.app import ComposeResult
 from textual.binding import Binding
@@ -26,7 +26,9 @@ from textual.widgets import (
 _PANDAS_TOP_LEVEL = [
     "DataFrame(", "Series(", "read_csv(", "read_excel(", "read_parquet(",
     "read_json(", "read_sql(", "read_html(", "read_pickle(", "read_feather(",
-    "read_clipboard(", "read_table(", "concat(", "merge(", "merge_asof(",
+    "read_orc(", "read_xml(", "read_hdf(", "read_stata(", "read_sas(",
+    "read_spss(", "read_clipboard(", "read_table(", "concat(", "merge(",
+    "merge_asof(",
     "merge_ordered(", "pivot_table(", "crosstab(", "cut(", "qcut(",
     "to_datetime(", "to_numeric(", "to_timedelta(", "date_range(", "isna(",
     "isnull(", "notna(", "notnull(", "get_dummies(", "melt(", "unique(",
@@ -122,7 +124,7 @@ class _DataFrameTextArea(TextArea):
 
 # ---------------------------------------------------------------- EditorPanel
 class EditorPanel(Vertical):
-    """Right pane: inline viewer/editor for .py, .csv, and .parquet files."""
+    """Right pane: inline viewer/editor for code files and pandas-readable data files."""
 
     BINDINGS = [
         Binding("ctrl+s", "save", "Save"),
@@ -180,7 +182,7 @@ class EditorPanel(Vertical):
     def compose(self) -> ComposeResult:
         yield Static("", id="ep-header")
         yield Static(
-            "Select a  .py  .csv  or  .parquet  file in the left panel.",
+            "Select a  .py  .sql  or data file (.csv .parquet .json .xlsx .csv.gz .zip …) in the left panel.",
             id="ep-placeholder",
         )
         yield _DataFrameTextArea("", id="ep-area")
@@ -206,8 +208,8 @@ class EditorPanel(Vertical):
 
         try:
             suffix = path.suffix.lower()
-            if suffix == ".parquet":
-                content = self._parquet_to_text(path)
+            if formats.is_binary(path):
+                content = self._dataframe_to_text(path)
             else:
                 content = path.read_text(encoding="utf-8", errors="replace")
 
@@ -390,8 +392,11 @@ class EditorPanel(Vertical):
     def action_save(self) -> None:
         if self.current_path is None:
             return
-        if self.current_path.suffix.lower() == ".parquet":
-            self.app.notify("Parquet files cannot be saved from the text editor.", severity="warning")
+        if formats.is_binary(self.current_path):
+            self.app.notify(
+                f"{self.current_path.suffix} files are a read-only preview and cannot be saved from the text editor.",
+                severity="warning",
+            )
             return
         text = self.query_one("#ep-area", TextArea).text
         try:
@@ -410,8 +415,8 @@ class EditorPanel(Vertical):
         return path.with_name(f".{path.name}.autosave")
 
     def _is_editable(self, path: Path | None) -> bool:
-        """Parquet is a read-only preview, so it is never auto-backed-up."""
-        return path is not None and path.suffix.lower() != ".parquet"
+        """Binary/compressed data files are a read-only preview, never auto-backed-up."""
+        return path is not None and not formats.is_binary(path)
 
     def _autosave(self) -> None:
         """Periodically mirror unsaved edits to the sidecar so nothing is lost."""
@@ -460,13 +465,14 @@ class EditorPanel(Vertical):
 
     # ----------------------------------------------------------------- helper
     @staticmethod
-    def _parquet_to_text(path: Path) -> str:
+    def _dataframe_to_text(path: Path) -> str:
         try:
-            import pandas as pd  # noqa: PLC0415
-            df = pd.read_parquet(path)
+            df = formats.load_dataframe(path)
             return df.to_string()
-        except ImportError:
+        except ImportError as exc:
+            packages = formats.required_packages(path)
+            extra = " " + " ".join(packages) if packages else ""
             return (
-                "[pandas is not installed — cannot preview .parquet files]\n\n"
-                "Install with:  pip install pandas"
+                f"[missing dependency — cannot preview '{path.name}': {exc}]\n\n"
+                f"Install with:  pip install pandas{extra}"
             )
