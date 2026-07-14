@@ -6,7 +6,7 @@ import json
 import os
 import shutil
 import sys
-from panels import formats, remote_sources
+from panels import formats, remote_backends, remote_sources
 from panels.EditorPanel import EditorPanel
 from panels.FilePanel import FilePanel
 from screens.splash import SplashScreen
@@ -16,6 +16,7 @@ from screens.command_output import CommandOutputScreen
 from screens.windows import WindowsScreen
 from screens.about import AboutScreen
 from screens.drives import DriveScreen
+from screens.directory_picker import DirectoryPickerScreen
 from datetime import datetime
 from pathlib import Path
 
@@ -105,11 +106,14 @@ class PandasCommander(App):
     }
 
     /* modal dialogs */
-    PromptScreen, ConfirmScreen, WindowsScreen, AboutScreen, DriveScreen { align: center middle; }
+    PromptScreen, ConfirmScreen, WindowsScreen, AboutScreen, DriveScreen, DirectoryPickerScreen { align: center middle; }
     WindowsScreen #dialog { width: 90; }
     #windows-list { height: auto; max-height: 20; margin-top: 1; }
     DriveScreen #dialog { width: 70; }
     #drive-list { height: auto; max-height: 20; margin-top: 1; }
+    DirectoryPickerScreen #dialog { width: 80; height: 30; }
+    #picker-path { color: $text-muted; margin-top: 1; }
+    #picker-tree { height: 1fr; margin-top: 1; border: round $primary; }
     #dialog {
         width: 64;
         height: auto;
@@ -136,6 +140,9 @@ class PandasCommander(App):
         Binding("f6", "chng_drv", "ChngDrv"),
         Binding("f7", "mkdir", "MkDir"),
         Binding("f8", "delete", "Delete"),
+        Binding("f3", "copy_file", "Copy"),
+        Binding("f9", "move_file", "Move"),
+        Binding("f11", "download_file", "Download"),
         Binding("ctrl+l", "focus_cmd", "Cmd"),
         Binding("f10", "quit", "Quit"),
         Binding("ctrl+q", "quit", "Quit"),
@@ -196,7 +203,7 @@ class PandasCommander(App):
 
     # ----------------------------------------------------------------- actions
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
-        if action in ("pandas_canvas", "mkdir", "delete", "new_file"):
+        if action in ("pandas_canvas", "mkdir", "delete", "new_file", "copy_file", "move_file"):
             node = self.focused
             while node is not None:
                 if isinstance(node, EditorPanel):
@@ -204,6 +211,15 @@ class PandasCommander(App):
                 node = node.parent
             if self.active_panel is not None and self.active_panel.mode == "remote":
                 # Remote sources are a read-only preview; no write operations there.
+                return None
+        if action == "download_file":
+            node = self.focused
+            while node is not None:
+                if isinstance(node, EditorPanel):
+                    return None
+                node = node.parent
+            if self.active_panel is None or self.active_panel.mode != "remote":
+                # Download only makes sense from a remote source.
                 return None
         return True
 
@@ -320,6 +336,66 @@ class PandasCommander(App):
             panel.set_remote(conn)
 
         self.push_screen(DriveScreen(), done)
+
+    def action_copy_file(self) -> None:
+        self._transfer_local(move=False)
+
+    def action_move_file(self) -> None:
+        self._transfer_local(move=True)
+
+    def _transfer_local(self, move: bool) -> None:
+        entry = self._selected_real()
+        if entry is None:
+            return
+        path, kind = entry
+        verb, verb_past = ("Move", "Moved") if move else ("Copy", "Copied")
+
+        def done(dest_dir: Path | None) -> None:
+            if dest_dir is None:
+                return
+            try:
+                if move:
+                    shutil.move(str(path), str(dest_dir))
+                elif kind == "dir":
+                    shutil.copytree(path, dest_dir / path.name)
+                else:
+                    shutil.copy2(path, dest_dir)
+                self.refresh_panels()
+                self.notify(f"{verb_past} '{path.name}' to {dest_dir}")
+            except (OSError, shutil.Error) as exc:
+                self.notify(f"{verb} failed: {exc}", severity="error")
+
+        self.push_screen(
+            DirectoryPickerScreen(Path(path.anchor), f"{verb} '{path.name}' to:"), done
+        )
+
+    def action_download_file(self) -> None:
+        panel = self.active_panel
+        if panel is None or panel.mode != "remote":
+            return
+        entry = self._selected_real()
+        if entry is None:
+            return
+        name, kind = entry
+        if kind != "file":
+            self.notify("Select a file to download.", severity="warning")
+            return
+        conn = panel.remote_conn
+        remote_key = f"{panel.remote_path}/{name}" if panel.remote_path else name
+
+        def done(dest_dir: Path | None) -> None:
+            if dest_dir is None:
+                return
+            dest = dest_dir / name
+            try:
+                remote_backends.download(conn, remote_key, dest)
+                self.notify(f"Downloaded '{name}' to {dest_dir}")
+            except Exception as exc:  # noqa: BLE001 - surface any backend/auth/network error
+                self.notify(f"Download failed: {exc}", severity="error")
+
+        self.push_screen(
+            DirectoryPickerScreen(Path(Path.home().anchor), f"Download '{name}' to:"), done
+        )
 
     def action_pandas_canvas(self) -> None:
         entry = self._selected_real()
