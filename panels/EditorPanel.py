@@ -6,10 +6,12 @@ import re
 import traceback
 from pathlib import Path
 
+import pyperclip
 from rich.text import Text
 
 from panels import formats, sql_tools
 
+from textual import events
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical
@@ -18,6 +20,7 @@ from textual.widgets import (
     Static,
     TextArea,
 )
+from textual.widgets.text_area import Selection
 
 # ------------------------------------------------------------- pandas autocomplete
 # Ghost-text (inline) completion for .py/.pandas files, in priority order — the
@@ -103,6 +106,25 @@ class _DataFrameTextArea(TextArea):
                 # Disable copy so ctrl+c bubbles up to EditorPanel's Concat.
                 return None
         return super().check_action(action, parameters)
+
+    async def _on_mouse_down(self, event: events.MouseDown) -> None:
+        if event.button == 3 and not self.read_only:
+            # Right click: move the cursor under the pointer and paste there,
+            # instead of starting a text-selection drag like the left button does.
+            # `action_paste()` reads Textual's own in-app clipboard (only ever
+            # populated by copying inside this app), not the OS clipboard, so
+            # the real system clipboard is fetched directly via pyperclip.
+            try:
+                text = pyperclip.paste()
+            except pyperclip.PyperclipException:
+                text = ""
+            if text:
+                self.selection = Selection.cursor(self.get_target_document_location(event))
+                result = self.replace(text, *self.selection, maintain_selection_offset=False)
+                self.move_cursor(result.end_location)
+            event.stop()
+            return
+        await super()._on_mouse_down(event)
 
     def update_suggestion(self) -> None:
         editor = self.parent
