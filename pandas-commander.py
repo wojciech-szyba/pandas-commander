@@ -6,7 +6,7 @@ import json
 import os
 import shutil
 import sys
-from panels import formats
+from panels import formats, remote_sources
 from panels.EditorPanel import EditorPanel
 from panels.FilePanel import FilePanel
 from screens.splash import SplashScreen
@@ -15,6 +15,7 @@ from screens.confirm import ConfirmScreen
 from screens.command_output import CommandOutputScreen
 from screens.windows import WindowsScreen
 from screens.about import AboutScreen
+from screens.drives import DriveScreen
 from datetime import datetime
 from pathlib import Path
 
@@ -104,9 +105,11 @@ class PandasCommander(App):
     }
 
     /* modal dialogs */
-    PromptScreen, ConfirmScreen, WindowsScreen, AboutScreen { align: center middle; }
+    PromptScreen, ConfirmScreen, WindowsScreen, AboutScreen, DriveScreen { align: center middle; }
     WindowsScreen #dialog { width: 90; }
     #windows-list { height: auto; max-height: 20; margin-top: 1; }
+    DriveScreen #dialog { width: 70; }
+    #drive-list { height: auto; max-height: 20; margin-top: 1; }
     #dialog {
         width: 64;
         height: auto;
@@ -130,6 +133,7 @@ class PandasCommander(App):
         Binding("f2", "windows", "Windows"),
         Binding("f4", "pandas_canvas", "Open in Pandas"),
         Binding("f5", "new_file", "New"),
+        Binding("f6", "chng_drv", "ChngDrv"),
         Binding("f7", "mkdir", "MkDir"),
         Binding("f8", "delete", "Delete"),
         Binding("ctrl+l", "focus_cmd", "Cmd"),
@@ -198,6 +202,9 @@ class PandasCommander(App):
                 if isinstance(node, EditorPanel):
                     return None
                 node = node.parent
+            if self.active_panel is not None and self.active_panel.mode == "remote":
+                # Remote sources are a read-only preview; no write operations there.
+                return None
         return True
 
     def action_switch_panel(self) -> None:
@@ -293,6 +300,26 @@ class PandasCommander(App):
                 self.notify(f"Delete failed: {exc}", severity="error")
 
         self.push_screen(ConfirmScreen(f"Delete '{path.name}'?  This cannot be undone."), done)
+
+    def action_chng_drv(self) -> None:
+        panel = self.active_panel
+        if panel is None:
+            return
+
+        def done(choice: tuple[str, str] | None) -> None:
+            if choice is None:
+                return
+            kind, value = choice
+            if kind == "local":
+                panel.set_local_drive(value)
+                return
+            conn = next((c for c in remote_sources.list_connections() if c.name == value), None)
+            if conn is None:
+                self.notify(f"Remote connection '{value}' not found in remote.ini.", severity="error")
+                return
+            panel.set_remote(conn)
+
+        self.push_screen(DriveScreen(), done)
 
     def action_pandas_canvas(self) -> None:
         entry = self._selected_real()
