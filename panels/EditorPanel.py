@@ -10,6 +10,7 @@ from rich.text import Text
 
 from panels import formats, sql_tools
 
+from textual import events
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical
@@ -18,6 +19,7 @@ from textual.widgets import (
     Static,
     TextArea,
 )
+from textual.widgets.text_area import Selection
 
 # ------------------------------------------------------------- pandas autocomplete
 # Ghost-text (inline) completion for .py/.pandas files, in priority order — the
@@ -103,6 +105,16 @@ class _DataFrameTextArea(TextArea):
                 # Disable copy so ctrl+c bubbles up to EditorPanel's Concat.
                 return None
         return super().check_action(action, parameters)
+
+    async def _on_mouse_down(self, event: events.MouseDown) -> None:
+        if event.button == 3 and not self.read_only:
+            # Right click: move the cursor under the pointer and paste there,
+            # instead of starting a text-selection drag like the left button does.
+            self.selection = Selection.cursor(self.get_target_document_location(event))
+            self.action_paste()
+            event.stop()
+            return
+        await super()._on_mouse_down(event)
 
     def update_suggestion(self) -> None:
         editor = self.parent
