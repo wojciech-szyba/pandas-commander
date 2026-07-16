@@ -152,11 +152,11 @@ class EditorPanel(Vertical):
         Binding("ctrl+s", "save", "Save"),
         Binding("ctrl+r", "run", "Run"),
         Binding("ctrl+g", "group_by", "GroupBy"),
-        Binding("ctrl+u", "unique", "Unique"),
+        Binding("ctrl+n", "unique", "Unique"),
         Binding("ctrl+m", "merge", "Merge"),
-        Binding("ctrl+c", "concat", "Concat"),
-        Binding("ctrl+p", "profiling", "Profiling"),
-        Binding("ctrl+w", "write_df_as", "WriteToFile"),
+        Binding("ctrl+t", "concat", "Concat"),
+        Binding("ctrl+f", "profiling", "Profiling"),
+        Binding("ctrl+insert", "write_df_as", "WriteToFile"),
     ]
 
     # Snippets inserted at the cursor, keyed by dataframe flavour.
@@ -167,16 +167,12 @@ class EditorPanel(Vertical):
             "merge": 'pd.merge(left, right, on="key", how="inner")',
             "concat": 'pd.concat([df1, df2], axis=0)',
             "write_df_as": 'df.to_csv("filename", compression="gzip")',
-            "profiling": """
-            summary = pd.DataFrame({
+            "profiling": """summary = pd.DataFrame({
                 "dtype": df.dtypes,
                 "non_null": df.count(),
                 "missing": df.isna().sum(),
                 "missing_%": df.isna().mean().mul(100).round(1),
-                "unique": df.nunique(),
-                })
-            print(summary)
-            print(df.describe(include="all").T)
+                "unique": df.nunique(),\n})\nprint(summary)\nprint(df.describe(include="all").T)
             """
     },
         ".polars": {
