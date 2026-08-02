@@ -6,10 +6,13 @@ import re
 import traceback
 from pathlib import Path
 
+import pyperclip
 from rich.text import Text
 
-from panels import formats, sql_tools
+from panels import formats, snippets, sql_tools
+from screens.snippet_picker import SnippetPickerScreen
 
+from textual import events
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical
@@ -18,6 +21,7 @@ from textual.widgets import (
     Static,
     TextArea,
 )
+from textual.widgets.text_area import Selection
 
 # ------------------------------------------------------------- pandas autocomplete
 # Ghost-text (inline) completion for .py/.pandas files, in priority order — the
@@ -93,16 +97,26 @@ def _pandas_suggestion(line_before_cursor: str) -> str:
 
 
 class _DataFrameTextArea(TextArea):
-    """TextArea that yields ctrl+c to the panel's Concat binding for .pandas/.polars files,
-    and offers inline pandas autocomplete for .py/.pandas files."""
+    """TextArea that offers inline pandas autocomplete for .py/.pandas files."""
 
-    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
-        if action == "copy":
-            editor = self.parent
-            if getattr(editor, "_dataframe_flavour", lambda: None)():
-                # Disable copy so ctrl+c bubbles up to EditorPanel's Concat.
-                return None
-        return super().check_action(action, parameters)
+    async def _on_mouse_down(self, event: events.MouseDown) -> None:
+        if event.button == 3 and not self.read_only:
+            # Right click: move the cursor under the pointer and paste there,
+            # instead of starting a text-selection drag like the left button does.
+            # `action_paste()` reads Textual's own in-app clipboard (only ever
+            # populated by copying inside this app), not the OS clipboard, so
+            # the real system clipboard is fetched directly via pyperclip.
+            try:
+                text = pyperclip.paste()
+            except pyperclip.PyperclipException:
+                text = ""
+            if text:
+                self.selection = Selection.cursor(self.get_target_document_location(event))
+                result = self.replace(text, *self.selection, maintain_selection_offset=False)
+                self.move_cursor(result.end_location)
+            event.stop()
+            return
+        await super()._on_mouse_down(event)
 
     def update_suggestion(self) -> None:
         editor = self.parent
@@ -129,42 +143,14 @@ class EditorPanel(Vertical):
     BINDINGS = [
         Binding("ctrl+s", "save", "Save"),
         Binding("ctrl+r", "run", "Run"),
-        Binding("ctrl+g", "group_by", "GroupBy"),
-        Binding("ctrl+u", "unique", "Unique"),
-        Binding("ctrl+m", "merge", "Merge"),
-        Binding("ctrl+c", "concat", "Concat"),
-        Binding("ctrl+p", "profiling", "Profiling"),
-        Binding("ctrl+w", "write_df_as", "WriteToFile"),
+        # Note: single real keystrokes only — TextArea/App already claim ctrl+a/c/d/e/
+        # h/i/j/k/m/p/q/s/u/v/w/x/y/z (editing shortcuts, quit, command palette, ...),
+        # and multi-part "ctrl+x+y"-style strings never fire from a real keyboard.
+        Binding("ctrl+g", "cmd_pandas", "cmdPandas"),
+        Binding("ctrl+o", "cmd_polars", "cmdPolars"),
+        Binding("ctrl+t", "cmd_pyspark", "cmdPySpark"),
+        Binding("ctrl+b", "cmd_dbt", "cmdDbt"),
     ]
-
-    # Snippets inserted at the cursor, keyed by dataframe flavour.
-    SNIPPETS = {
-        ".pandas": {
-            "group_by": 'df.groupby("column").agg({"value": "sum"})',
-            "unique": 'df["column"].unique()',
-            "merge": 'pd.merge(left, right, on="key", how="inner")',
-            "concat": 'pd.concat([df1, df2], axis=0)',
-            "write_df_as": 'df.to_csv("filename", compression="gzip")',
-            "profiling": """
-            summary = pd.DataFrame({
-                "dtype": df.dtypes,
-                "non_null": df.count(),
-                "missing": df.isna().sum(),
-                "missing_%": df.isna().mean().mul(100).round(1),
-                "unique": df.nunique(),
-                })
-            print(summary)
-            print(df.describe(include="all").T)
-            """
-    },
-        ".polars": {
-            "group_by": 'df.group_by("column").agg(pl.col("value").sum())',
-            "unique": 'df.select(pl.col("column").unique())',
-            "merge": 'left.join(right, on="key", how="inner")',
-            "concat": 'pl.concat([df1, df2])',
-            "write_df_as": 'df.to_csv("filename", compression="gzip")',
-        },
-    }
 
     _RUNNABLE_SUFFIXES = {".py", ".pandas", ".polars", ".sql"}
 
@@ -243,47 +229,36 @@ class EditorPanel(Vertical):
             self.refresh_bindings()
 
     # ------------------------------------------------------- conditional binds
-    def _dataframe_flavour(self) -> str | None:
-        """Return the snippet key (.pandas/.polars) for the open file, else None."""
-        if self.current_path is None:
-            return None
-        suffix = self.current_path.suffix.lower()
-        return suffix if suffix in self.SNIPPETS else None
-
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
-        if action in ("group_by", "unique", "merge", "concat", "profiling", "write_df_as"):
-            # True when applicable, None to hide the binding from the footer.
-            return True if self._dataframe_flavour() else None
-        if action == "run":
+        if action in ("cmd_pandas", "cmd_polars", "cmd_pyspark", "cmd_dbt", "run"):
             if self.current_path is None:
                 return None
+            # True when applicable, None to hide the binding from the footer.
             return True if self.current_path.suffix.lower() in self._RUNNABLE_SUFFIXES else None
         return True
 
-    def _insert_snippet(self, action: str) -> None:
-        flavour = self._dataframe_flavour()
-        if flavour is None:
-            return
-        snippet = self.SNIPPETS[flavour][action]
-        self.query_one("#ep-area", TextArea).insert(snippet)
+    def _open_snippet_picker(self, library: str) -> None:
+        """Pop up the snippet list for `library` (pandas/polars/pyspark/dbt) and
+        insert the chosen snippet at the cursor."""
+        title, catalog = snippets.LIBRARIES[library]
 
-    def action_group_by(self) -> None:
-        self._insert_snippet("group_by")
+        def done(code: str | None) -> None:
+            if code:
+                self.query_one("#ep-area", TextArea).insert(code)
 
-    def action_unique(self) -> None:
-        self._insert_snippet("unique")
+        self.app.push_screen(SnippetPickerScreen(title, catalog), done)
 
-    def action_merge(self) -> None:
-        self._insert_snippet("merge")
+    def action_cmd_pandas(self) -> None:
+        self._open_snippet_picker("pandas")
 
-    def action_concat(self) -> None:
-        self._insert_snippet("concat")
+    def action_cmd_polars(self) -> None:
+        self._open_snippet_picker("polars")
 
-    def action_write_df_as(self) -> None:
-        self._insert_snippet("write_df_as")
+    def action_cmd_pyspark(self) -> None:
+        self._open_snippet_picker("pyspark")
 
-    def action_profiling(self) -> None:
-        self._insert_snippet("profiling")
+    def action_cmd_dbt(self) -> None:
+        self._open_snippet_picker("dbt")
 
     # ------------------------------------------------------------------ action
     def action_run(self) -> None:
@@ -476,3 +451,11 @@ class EditorPanel(Vertical):
                 f"[missing dependency — cannot preview '{path.name}': {exc}]\n\n"
                 f"Install with:  pip install pandas{extra}"
             )
+
+
+class PandasEditorPanel(EditorPanel):
+    """Right pane: inline viewer/editor for code files and pandas-readable data files.
+
+    Identical to EditorPanel — kept as a distinct name for clarity at the call site
+    in pandas-commander.py.
+    """

@@ -7,7 +7,7 @@ import os
 import shutil
 import sys
 from panels import formats, remote_backends, remote_sources
-from panels.EditorPanel import EditorPanel
+from panels.EditorPanel import PandasEditorPanel
 from panels.FilePanel import FilePanel
 from screens.splash import SplashScreen
 from screens.prompt import PromptScreen
@@ -106,9 +106,11 @@ class PandasCommander(App):
     }
 
     /* modal dialogs */
-    PromptScreen, ConfirmScreen, WindowsScreen, AboutScreen, DriveScreen, DirectoryPickerScreen { align: center middle; }
+    PromptScreen, ConfirmScreen, WindowsScreen, AboutScreen, DriveScreen, DirectoryPickerScreen, SnippetPickerScreen { align: center middle; }
     WindowsScreen #dialog { width: 90; }
     #windows-list { height: auto; max-height: 20; margin-top: 1; }
+    SnippetPickerScreen #dialog { width: 90; }
+    #snippet-list { height: auto; max-height: 20; margin-top: 1; }
     DriveScreen #dialog { width: 70; }
     #drive-list { height: auto; max-height: 20; margin-top: 1; }
     DirectoryPickerScreen #dialog { width: 80; height: 30; }
@@ -135,7 +137,7 @@ class PandasCommander(App):
         Binding("backspace", "up", "Up"),
         Binding("f1", "about", "About"),
         Binding("f2", "windows", "Windows"),
-        Binding("f4", "pandas_canvas", "Open in Pandas"),
+        Binding("f4", "pandas_canvas", "Open as source file"),
         Binding("f5", "new_file", "New"),
         Binding("f6", "chng_drv", "ChngDrv"),
         Binding("f7", "mkdir", "MkDir"),
@@ -161,13 +163,13 @@ class PandasCommander(App):
     def compose(self) -> ComposeResult:
         with Horizontal(id="panels"):
             yield FilePanel(self.start_dir, panel_id="left")
-            yield EditorPanel()
+            yield PandasEditorPanel()
         yield Input(placeholder="Shell command — runs in active panel's dir…", id="cmdline")
         yield Footer()
 
     def on_mount(self) -> None:
         self.left = self.query_one("#left", FilePanel)
-        self.right = self.query_one("#right", EditorPanel)
+        self.right = self.query_one("#right", PandasEditorPanel)
         self.set_active(self.left)
         self.left.query_one(DataTable).focus()
         self.push_screen(SplashScreen())
@@ -194,7 +196,7 @@ class PandasCommander(App):
                 self.set_active(node)
                 self.right.remove_class("-active")
                 return
-            if isinstance(node, EditorPanel):
+            if isinstance(node, PandasEditorPanel):
                 if self.active_panel is not None:
                     self.active_panel.remove_class("-active")
                 self.right.add_class("-active")
@@ -206,7 +208,7 @@ class PandasCommander(App):
         if action in ("pandas_canvas", "mkdir", "delete", "new_file", "copy_file", "move_file"):
             node = self.focused
             while node is not None:
-                if isinstance(node, EditorPanel):
+                if isinstance(node, PandasEditorPanel):
                     return None
                 node = node.parent
             if self.active_panel is not None and self.active_panel.mode == "remote":
@@ -215,7 +217,7 @@ class PandasCommander(App):
         if action == "download_file":
             node = self.focused
             while node is not None:
-                if isinstance(node, EditorPanel):
+                if isinstance(node, PandasEditorPanel):
                     return None
                 node = node.parent
             if self.active_panel is None or self.active_panel.mode != "remote":
@@ -229,7 +231,7 @@ class PandasCommander(App):
         in_editor = False
         node = focused
         while node is not None:
-            if isinstance(node, EditorPanel):
+            if isinstance(node, PandasEditorPanel):
                 in_editor = True
                 break
             node = node.parent
