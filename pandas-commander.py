@@ -497,7 +497,7 @@ class PandasCommander(App):
         """Selected entry that is a real file or dir (not '..')."""
         entry = self.active_panel.selected_entry if self.active_panel else None
         if entry is None or entry[1] == "parent":
-            self.notify("Nothing to operate on.", severity="warning")
+            self.notify("Nothing to operate on. ", severity="warning")
             return None
         return entry
 
