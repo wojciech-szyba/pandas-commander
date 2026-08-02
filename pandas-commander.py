@@ -6,6 +6,7 @@ import json
 import os
 import shutil
 import sys
+from panels import formats
 from panels.EditorPanel import PandasEditorPanel
 from panels.FilePanel import FilePanel
 from screens.splash import SplashScreen
