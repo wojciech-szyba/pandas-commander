@@ -254,12 +254,57 @@ SQL_KEYWORDS = [
 
 _SQL_WORD_RE = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)$")
 
+# ------------------------------------------------------------- dbt autocomplete
+# dbt models are .sql files with embedded Jinja. Inside an unclosed `{{ }}` or
+# `{% %}` on the current line, offer dbt/Jinja keywords instead of ANSI SQL —
+# lowercase, since that's the Jinja/dbt convention.
+DBT_EXPR_KEYWORDS = [
+    "ref('", "source('", "config(", "var(", "env_var('", "log(", "return(",
+    "is_incremental()", "this", "target.schema", "target.database",
+    "target.name", "invocation_id", "run_started_at", "model", "graph",
+    "adapter.", "execute", "dbt_utils.",
+]
+DBT_STMT_KEYWORDS = [
+    "if ", "elif ", "else", "endif", "for ", "endfor", "set ", "endset",
+    "macro ", "endmacro", "materialization ", "endmaterialization",
+    "block ", "endblock", "call ", "endcall", "filter ", "endfilter",
+    "snapshot ", "endsnapshot", "do ", "import ", "include ", "raw", "endraw",
+]
+
+
+def _jinja_context(line: str) -> str | None:
+    """'expr' inside an unclosed {{ }}, 'stmt' inside an unclosed {% %}, else None."""
+    open_expr, close_expr = line.rfind("{{"), line.rfind("}}")
+    open_stmt, close_stmt = line.rfind("{%"), line.rfind("%}")
+    if open_expr > close_expr and open_expr >= open_stmt:
+        return "expr"
+    if open_stmt > close_stmt and open_stmt >= open_expr:
+        return "stmt"
+    return None
+
+
+def _dbt_suggestion(line_before_cursor: str, context: str) -> str:
+    m = _SQL_WORD_RE.search(line_before_cursor)
+    prefix = m.group(1) if m else ""
+    keywords = DBT_EXPR_KEYWORDS if context == "expr" else DBT_STMT_KEYWORDS
+    for keyword in keywords:
+        if keyword.startswith(prefix) and keyword != prefix:
+            return keyword[len(prefix):]
+    return ""
+
 
 def sql_suggestion(line_before_cursor: str) -> str:
-    """Ghost-text suggestion for ANSI SQL, given the text left of the cursor.
+    """Ghost-text suggestion for ANSI SQL (and dbt/Jinja) given the text left
+    of the cursor.
 
-    The completion follows the typed case: `sel` -> `ect`, `SEL` -> `ECT`.
+    The SQL-keyword completion follows the typed case: `sel` -> `ect`,
+    `SEL` -> `ECT`. Inside a Jinja `{{ }}`/`{% %}` tag, dbt keywords are
+    offered instead, always lowercase.
     """
+    jinja_context = _jinja_context(line_before_cursor)
+    if jinja_context is not None:
+        return _dbt_suggestion(line_before_cursor, jinja_context)
+
     m = _SQL_WORD_RE.search(line_before_cursor)
     if m is None:
         return ""

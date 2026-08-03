@@ -23,10 +23,12 @@ from textual.widgets import (
 )
 from textual.widgets.text_area import Selection
 
-# ------------------------------------------------------------- pandas autocomplete
-# Ghost-text (inline) completion for .py/.pandas files, in priority order — the
-# first candidate that starts with the typed prefix wins. Accepted with the
-# right-arrow key, same as TextArea's built-in suggestion mechanism.
+# ------------------------------------------------------------- python autocomplete
+# Ghost-text (inline) completion for .py/.pandas/.polars files, in priority
+# order — the first candidate that starts with the typed prefix wins. Accepted
+# with the right-arrow key, same as TextArea's built-in suggestion mechanism.
+# Dispatch is alias-driven (pd/pl/spark/F...) so pandas, Polars and PySpark
+# code can all be completed in the same file.
 _PANDAS_TOP_LEVEL = [
     "DataFrame(", "Series(", "read_csv(", "read_excel(", "read_parquet(",
     "read_json(", "read_sql(", "read_html(", "read_pickle(", "read_feather(",
@@ -67,9 +69,84 @@ _NON_DATAFRAME_NAMES = {
 
 _PANDAS_ALIASES = {"pd", "pandas"}
 
+_POLARS_TOP_LEVEL = [
+    "DataFrame(", "Series(", "LazyFrame(", "read_csv(", "read_parquet(",
+    "read_json(", "read_ndjson(", "read_excel(", "read_ipc(", "read_avro(",
+    "read_database(", "scan_csv(", "scan_parquet(", "scan_ndjson(",
+    "scan_ipc(", "concat(", "col(", "cols(", "lit(", "when(", "all(", "any(",
+    "sum(", "min(", "max(", "mean(", "median(", "count(", "first(", "last(",
+    "struct(", "from_pandas(", "from_numpy(", "from_dict(", "from_records(",
+    "date_range(", "datetime(", "duration(", "concat_str(", "concat_list(",
+    "Config", "Int8", "Int16", "Int32", "Int64", "Float32", "Float64",
+    "Utf8", "Boolean", "Date", "Datetime", "Duration", "List", "Struct",
+]
+
+_POLARS_DF_METHODS = [
+    "head(", "tail(", "glimpse(", "describe(", "shape", "columns", "dtypes",
+    "schema", "height", "width", "select(", "with_columns(", "filter(",
+    "group_by(", "agg(", "sort(", "join(", "join_asof(", "unique(", "drop(",
+    "drop_nulls(", "fill_null(", "fill_nan(", "rename(", "explode(",
+    "melt(", "unpivot(", "pivot(", "to_dummies(", "sample(", "slice(",
+    "limit(", "top_k(", "bottom_k(", "null_count(", "n_unique(",
+    "is_duplicated(", "is_unique(", "with_row_index(", "lazy(", "collect(",
+    "sink_parquet(", "sink_csv(", "to_pandas(", "to_numpy(", "to_dict(",
+    "to_series(", "write_csv(", "write_parquet(", "write_json(",
+    "write_ndjson(", "clone(", "cast(", "map_batches(", "estimated_size(",
+]
+
+_POLARS_ALIASES = {"pl", "polars"}
+
+# PySpark has two common dot-contexts: the SparkSession (`spark.`) and the
+# functions module (usually aliased `F`). Both are alias-driven like pandas.
+_PYSPARK_SESSION_METHODS = [
+    "createDataFrame(", "read.csv(", "read.parquet(", "read.json(",
+    "read.orc(", "read.table(", "read.format(", "sql(", "table(", "range(",
+    "stop(", "newSession(", "catalog", "conf", "sparkContext", "udf",
+    "streams", "version",
+]
+_PYSPARK_SESSION_ALIASES = {"spark"}
+
+_PYSPARK_FUNCTIONS = [
+    "col(", "lit(", "when(", "otherwise(", "coalesce(", "concat(",
+    "concat_ws(", "substring(", "trim(", "upper(", "lower(", "length(",
+    "split(", "regexp_replace(", "regexp_extract(", "to_date(",
+    "to_timestamp(", "date_format(", "datediff(", "date_add(", "date_sub(",
+    "year(", "month(", "dayofmonth(", "hour(", "sum(", "avg(", "count(",
+    "countDistinct(", "min(", "max(", "first(", "last(", "collect_list(",
+    "collect_set(", "struct(", "array(", "explode(", "expr(", "udf(",
+    "row_number(", "rank(", "dense_rank(", "lag(", "lead(", "broadcast(",
+    "monotonically_increasing_id(", "current_date(", "current_timestamp(",
+    "isnull(", "isnan(", "greatest(", "least(", "round(", "abs(",
+]
+_PYSPARK_FUNCTIONS_ALIASES = {"F", "sf", "psf", "functions"}
+
+_PYSPARK_DF_METHODS = [
+    "show(", "printSchema(", "count(", "collect(", "take(", "first(",
+    "head(", "select(", "selectExpr(", "withColumn(", "withColumns(",
+    "withColumnRenamed(", "drop(", "filter(", "where(", "groupBy(", "agg(",
+    "orderBy(", "sort(", "join(", "crossJoin(", "union(", "unionByName(",
+    "intersect(", "subtract(", "distinct(", "dropDuplicates(", "na",
+    "fillna(", "dropna(", "replace(", "alias(", "cache(", "persist(",
+    "unpersist(", "repartition(", "coalesce(", "limit(", "sample(",
+    "toPandas(", "toJSON(", "createOrReplaceTempView(",
+    "createGlobalTempView(", "explain(", "columns", "dtypes", "schema",
+    "rdd", "write.csv(", "write.parquet(", "write.json(", "write.mode(",
+]
+
+_POLARS_IMPORT_RE = re.compile(r"^\s*(import\s+polars\b|from\s+polars\b)", re.MULTILINE)
+_PYSPARK_IMPORT_RE = re.compile(r"^\s*(import\s+pyspark\b|from\s+pyspark\b)", re.MULTILINE)
+
 _DOT_RE = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)?$")
 _IMPORT_RE = re.compile(r"^(\s*)import\s+(\w*)$")
 _FROM_RE = re.compile(r"^(\s*)from\s+(\w*)$")
+
+_IMPORT_CANDIDATES = ["pandas as pd", "polars as pl", "pyspark"]
+_FROM_CANDIDATES = [
+    "pandas import ",
+    "polars import ",
+    "pyspark.sql import SparkSession",
+    "pyspark.sql import functions as F",
+]
 
 
 def _match(prefix: str, candidates: list[str]) -> str:
@@ -80,24 +157,46 @@ def _match(prefix: str, candidates: list[str]) -> str:
     return ""
 
 
-def _pandas_suggestion(line_before_cursor: str) -> str:
-    """Ghost-text suggestion for pandas code, given the text left of the cursor."""
+def _default_dataframe_methods(full_text: str, suffix: str) -> list[str]:
+    """Fallback method list for a dot-chain on an unrecognised identifier.
+
+    Picks the vocabulary by file suffix first (.polars is unambiguous), then
+    by which library the file actually imports, defaulting to pandas.
+    """
+    if suffix == ".polars" or _POLARS_IMPORT_RE.search(full_text):
+        return _POLARS_DF_METHODS
+    if _PYSPARK_IMPORT_RE.search(full_text):
+        return _PYSPARK_DF_METHODS
+    return _DATAFRAME_METHODS
+
+
+def _python_suggestion(line_before_cursor: str, full_text: str, suffix: str) -> str:
+    """Ghost-text suggestion for pandas/Polars/PySpark code, given the text
+    left of the cursor and the full document (used to infer the active
+    library for generic, non-aliased dot-chains)."""
     if m := _DOT_RE.search(line_before_cursor):
         obj, prefix = m.group(1), m.group(2) or ""
         if obj in _PANDAS_ALIASES:
             return _match(prefix, _PANDAS_TOP_LEVEL)
+        if obj in _POLARS_ALIASES:
+            return _match(prefix, _POLARS_TOP_LEVEL)
+        if obj in _PYSPARK_SESSION_ALIASES:
+            return _match(prefix, _PYSPARK_SESSION_METHODS)
+        if obj in _PYSPARK_FUNCTIONS_ALIASES:
+            return _match(prefix, _PYSPARK_FUNCTIONS)
         if obj not in _NON_DATAFRAME_NAMES:
-            return _match(prefix, _DATAFRAME_METHODS)
+            return _match(prefix, _default_dataframe_methods(full_text, suffix))
         return ""
     if m := _IMPORT_RE.match(line_before_cursor):
-        return _match(m.group(2), ["pandas as pd"])
+        return _match(m.group(2), _IMPORT_CANDIDATES)
     if m := _FROM_RE.match(line_before_cursor):
-        return _match(m.group(2), ["pandas import "])
+        return _match(m.group(2), _FROM_CANDIDATES)
     return ""
 
 
 class _DataFrameTextArea(TextArea):
-    """TextArea that offers inline pandas autocomplete for .py/.pandas files."""
+    """TextArea that offers inline pandas/Polars/PySpark autocomplete for
+    .py/.pandas/.polars files, and SQL/dbt autocomplete for .sql files."""
 
     async def _on_mouse_down(self, event: events.MouseDown) -> None:
         if event.button == 3 and not self.read_only:
@@ -133,7 +232,7 @@ class _DataFrameTextArea(TextArea):
         if suffix == ".sql":
             self.suggestion = sql_tools.sql_suggestion(line)
         else:
-            self.suggestion = _pandas_suggestion(line)
+            self.suggestion = _python_suggestion(line, self.text, suffix)
 
 
 # ---------------------------------------------------------------- EditorPanel
