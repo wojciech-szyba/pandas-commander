@@ -133,8 +133,18 @@ _PYSPARK_DF_METHODS = [
     "rdd", "write.csv(", "write.parquet(", "write.json(", "write.mode(",
 ]
 
+_PANDAS_IMPORT_RE = re.compile(r"^\s*(import\s+pandas\b|from\s+pandas\b)", re.MULTILINE)
 _POLARS_IMPORT_RE = re.compile(r"^\s*(import\s+polars\b|from\s+polars\b)", re.MULTILINE)
 _PYSPARK_IMPORT_RE = re.compile(r"^\s*(import\s+pyspark\b|from\s+pyspark\b)", re.MULTILINE)
+
+# Import line auto-prepended by the snippet picker (cmdPandas/cmdPolars/
+# cmdPySpark) when the chosen snippet's library isn't imported yet. Keyed by
+# the same library name as snippets.LIBRARIES; dbt has no Python import.
+_LIBRARY_IMPORT_LINES: dict[str, tuple[re.Pattern, str]] = {
+    "pandas": (_PANDAS_IMPORT_RE, "import pandas as pd"),
+    "polars": (_POLARS_IMPORT_RE, "import polars as pl"),
+    "pyspark": (_PYSPARK_IMPORT_RE, "from pyspark.sql import SparkSession, functions as F"),
+}
 
 _DOT_RE = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)?$")
 _IMPORT_RE = re.compile(r"^(\s*)import\s+(\w*)$")
@@ -221,7 +231,7 @@ class _DataFrameTextArea(TextArea):
         editor = self.parent
         path = getattr(editor, "current_path", None)
         suffix = path.suffix.lower() if path is not None else ""
-        if suffix not in (".py", ".pandas", ".sql"):
+        if suffix not in (".py", ".pandas", ".polars", ".sql"):
             self.suggestion = ""
             return
         if self.selection.start != self.selection.end:
@@ -343,9 +353,27 @@ class EditorPanel(Vertical):
 
         def done(code: str | None) -> None:
             if code:
-                self.query_one("#ep-area", TextArea).insert(code)
+                area = self.query_one("#ep-area", TextArea)
+                self._ensure_import(area, library)
+                area.insert(code)
 
         self.app.push_screen(SnippetPickerScreen(title, catalog), done)
+
+    @staticmethod
+    def _ensure_import(area: TextArea, library: str) -> None:
+        """Prepend `library`'s import line if the file doesn't already have it.
+
+        Inserted at document start with maintain_selection_offset (insert()'s
+        default), so the cursor — and the snippet about to land there — keeps
+        its logical position in the file.
+        """
+        spec = _LIBRARY_IMPORT_LINES.get(library)
+        if spec is None:
+            return
+        pattern, import_line = spec
+        if pattern.search(area.text):
+            return
+        area.insert(f"{import_line}\n\n", (0, 0))
 
     def action_cmd_pandas(self) -> None:
         self._open_snippet_picker("pandas")
