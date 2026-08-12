@@ -2,19 +2,20 @@
 Lightweight portable os independent (works in Windows Terminal , Linux Shell, remote VPS, cloud isolated from external networks etc...) Pandas data multitool in one window
 
 ## Features
-- Classic commander file manager (mkdir , new file , delete)
+- Classic commander file manager (mkdir , new file , delete, copy , move, download)
 - Pandas files editor (view, edit, syntax highlighting , code autocompletion, running)
 - Polars files editor (view, edit, syntax highlighting , code autocompletion, running)
+- PySpark files editor (view, edit, syntax highlighting , code autocompletion, running)
 - Python files editor (view, edit, syntax highlighting , code autocompletion, running)
-- SQL files editor (view, edit, syntax highlighting , code autocompletion, running)
-- Handy clasic command line with output in window 
-- Pandas code snippets
-- Autosave
+- SQL files editor (view, edit, syntax highlighting , code autocompletion, running sqls against SQLAlchemy compatible RDBMs)
+- Handy clasic command line with output in results window 
+- Pandas, PySpark, Polars, dbt code snippets
+- Editor Autosave
 - Multiple windows handling
 - Results graphical visualisation
 - CSV / JSON file viewer / editor
 - Popular data files Pandas based viewer (generates pandas code and returns head after run triggered) / editor (csv, json , parquet, orc, avro ,feather, xlsx/xlsm, xml, tsv, pickle)
-
+- Remote cloud / ftp/ sftp locations handling
 
 Stay tuned .. there will be more
 
