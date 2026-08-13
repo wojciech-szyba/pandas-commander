@@ -6,6 +6,7 @@ import json
 import os
 import shutil
 import sys
+import tempfile
 from panels import formats, remote_backends, remote_sources
 from panels.EditorPanel import PandasEditorPanel
 from panels.FilePanel import FilePanel
@@ -211,8 +212,13 @@ class PandasCommander(App):
                 if isinstance(node, PandasEditorPanel):
                     return None
                 node = node.parent
-            if self.active_panel is not None and self.active_panel.mode == "remote":
+            if (
+                action != "pandas_canvas"
+                and self.active_panel is not None
+                and self.active_panel.mode == "remote"
+            ):
                 # Remote sources are a read-only preview; no write operations there.
+                # pandas_canvas (F4) is allowed: it downloads the file first.
                 return None
         if action == "download_file":
             node = self.focused
@@ -400,24 +406,49 @@ class PandasCommander(App):
         )
 
     def action_pandas_canvas(self) -> None:
+        panel = self.active_panel
         entry = self._selected_real()
         if entry is None:
             return
-        path, kind = entry
+        identifier, kind = entry
+        if kind == "dir":
+            return
 
-        if kind != "dir":
-            base = path
-            # data.csv.gz -> data.pandas (drop the compression suffix first).
-            if base.suffix.lower() in formats.COMPRESSIONS and Path(base.stem).suffix:
-                base = base.with_suffix("")
-            new_path = base.with_suffix(".pandas")
-            if not new_path.exists():
-                new_path.touch()
-                with open(new_path, 'w') as f:
-                    f.write('import pandas as pd\n\n')
-                    f.write(formats.read_code(path) + '\n')
-                    f.write(formats.read_df_head(path))
-            self.open_file(new_path)
+        if panel is not None and panel.mode == "remote":
+            path = self._download_remote_for_edit(panel, identifier)
+            if path is None:
+                return
+        else:
+            path = identifier
+
+        base = path
+        # data.csv.gz -> data.pandas (drop the compression suffix first).
+        if base.suffix.lower() in formats.COMPRESSIONS and Path(base.stem).suffix:
+            base = base.with_suffix("")
+        new_path = base.with_suffix(".pandas")
+        if not new_path.exists():
+            new_path.touch()
+            with open(new_path, 'w') as f:
+                f.write('import pandas as pd\n\n')
+                f.write(formats.read_code(path) + '\n')
+                f.write(formats.read_df_head(path))
+        self.open_file(new_path)
+
+    def _download_remote_for_edit(self, panel: FilePanel, name: str) -> Path | None:
+        """Download a remote file for F4 editing, then switch the panel to the local copy."""
+        conn = panel.remote_conn
+        remote_key = f"{panel.remote_path}/{name}" if panel.remote_path else name
+        dest_dir = Path(tempfile.gettempdir()) / "pandas_commander_remote" / conn.name
+        try:
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            dest = dest_dir / name
+            remote_backends.download(conn, remote_key, dest)
+        except Exception as exc:  # noqa: BLE001 - surface any backend/auth/network error
+            self.notify(f"Download failed: {exc}", severity="error")
+            return None
+        panel.set_local_drive(str(dest_dir))
+        self.notify(f"Downloaded '{name}' and switched to local drive.")
+        return dest
 
     # -------------------------------------------------------- file panel event
     @on(FilePanel.FileSelected)
