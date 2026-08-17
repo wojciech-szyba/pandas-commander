@@ -6,13 +6,19 @@ import json
 import os
 import shutil
 import sys
+import tempfile
 from panels import formats, remote_backends, remote_sources
+from panels.cli_snippets import CLI_SNIPPETS
+from panels.command_history import CommandHistory
+from panels.command_line import CommandSuggester
 from panels.EditorPanel import PandasEditorPanel
 from panels.FilePanel import FilePanel
 from screens.splash import SplashScreen
 from screens.prompt import PromptScreen
 from screens.confirm import ConfirmScreen
 from screens.command_output import CommandOutputScreen
+from screens.command_snippet_picker import CommandSnippetPickerScreen
+from screens.command_history_picker import CommandHistoryPickerScreen
 from screens.windows import WindowsScreen
 from screens.about import AboutScreen
 from screens.drives import DriveScreen
@@ -106,11 +112,13 @@ class PandasCommander(App):
     }
 
     /* modal dialogs */
-    PromptScreen, ConfirmScreen, WindowsScreen, AboutScreen, DriveScreen, DirectoryPickerScreen, SnippetPickerScreen { align: center middle; }
+    PromptScreen, ConfirmScreen, WindowsScreen, AboutScreen, DriveScreen, DirectoryPickerScreen, SnippetPickerScreen, CommandSnippetPickerScreen, CommandHistoryPickerScreen { align: center middle; }
     WindowsScreen #dialog { width: 90; }
     #windows-list { height: auto; max-height: 20; margin-top: 1; }
     SnippetPickerScreen #dialog { width: 90; }
     #snippet-list { height: auto; max-height: 20; margin-top: 1; }
+    CommandSnippetPickerScreen #dialog, CommandHistoryPickerScreen #dialog { width: 110; }
+    #filter-options { height: auto; max-height: 20; margin-top: 1; }
     DriveScreen #dialog { width: 70; }
     #drive-list { height: auto; max-height: 20; margin-top: 1; }
     DirectoryPickerScreen #dialog { width: 80; height: 30; }
@@ -146,6 +154,8 @@ class PandasCommander(App):
         Binding("f9", "move_file", "Move"),
         Binding("f11", "download_file", "Download"),
         Binding("ctrl+l", "focus_cmd", "Cmd"),
+        Binding("ctrl+f", "cmd_snippets", "Snippets"),
+        Binding("f12", "cmd_history", "History"),
         Binding("f10", "quit", "Quit"),
         Binding("ctrl+q", "quit", "Quit"),
     ]
@@ -159,12 +169,18 @@ class PandasCommander(App):
         self.start_dir = start_dir or os.getcwd()
         self.active_panel: FilePanel | None = None
         self.recent_files: list[str] = self._load_recent()
+        self.command_history = CommandHistory()
+        self.command_pool: list[str] = []
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="panels"):
             yield FilePanel(self.start_dir, panel_id="left")
             yield PandasEditorPanel()
-        yield Input(placeholder="Shell command — runs in active panel's dir…", id="cmdline")
+        yield Input(
+            placeholder="Shell command — runs in active panel's dir…  (Ctrl+F snippets, F12 history)",
+            id="cmdline",
+            suggester=CommandSuggester(self.command_pool),
+        )
         yield Footer()
 
     def on_mount(self) -> None:
@@ -172,7 +188,25 @@ class PandasCommander(App):
         self.right = self.query_one("#right", PandasEditorPanel)
         self.set_active(self.left)
         self.left.query_one(DataTable).focus()
+        self._load_command_pool()
         self.push_screen(SplashScreen())
+
+    def _load_command_pool(self) -> None:
+        """Seed autocompletion: recent history first, then curated one-liners."""
+        seen: set[str] = set()
+        pool: list[str] = []
+        for cmd in self.command_history.all_commands():
+            if cmd not in seen:
+                seen.add(cmd)
+                pool.append(cmd)
+        for _os_tag, _label, cmd in CLI_SNIPPETS:
+            if cmd not in seen:
+                seen.add(cmd)
+                pool.append(cmd)
+        self.command_pool[:] = pool
+
+    def _add_to_pool(self, cmd: str) -> None:
+        self.command_pool[:] = [cmd] + [c for c in self.command_pool if c != cmd]
 
     # ------------------------------------------------------------- panel state
     def set_active(self, panel: FilePanel) -> None:
@@ -211,8 +245,13 @@ class PandasCommander(App):
                 if isinstance(node, PandasEditorPanel):
                     return None
                 node = node.parent
-            if self.active_panel is not None and self.active_panel.mode == "remote":
+            if (
+                action != "pandas_canvas"
+                and self.active_panel is not None
+                and self.active_panel.mode == "remote"
+            ):
                 # Remote sources are a read-only preview; no write operations there.
+                # pandas_canvas (F4) is allowed: it downloads the file first.
                 return None
         if action == "download_file":
             node = self.focused
@@ -400,24 +439,49 @@ class PandasCommander(App):
         )
 
     def action_pandas_canvas(self) -> None:
+        panel = self.active_panel
         entry = self._selected_real()
         if entry is None:
             return
-        path, kind = entry
+        identifier, kind = entry
+        if kind == "dir":
+            return
 
-        if kind != "dir":
-            base = path
-            # data.csv.gz -> data.pandas (drop the compression suffix first).
-            if base.suffix.lower() in formats.COMPRESSIONS and Path(base.stem).suffix:
-                base = base.with_suffix("")
-            new_path = base.with_suffix(".pandas")
-            if not new_path.exists():
-                new_path.touch()
-                with open(new_path, 'w') as f:
-                    f.write('import pandas as pd\n\n')
-                    f.write(formats.read_code(path) + '\n')
-                    f.write(formats.read_df_head(path))
-            self.open_file(new_path)
+        if panel is not None and panel.mode == "remote":
+            path = self._download_remote_for_edit(panel, identifier)
+            if path is None:
+                return
+        else:
+            path = identifier
+
+        base = path
+        # data.csv.gz -> data.pandas (drop the compression suffix first).
+        if base.suffix.lower() in formats.COMPRESSIONS and Path(base.stem).suffix:
+            base = base.with_suffix("")
+        new_path = base.with_suffix(".pandas")
+        if not new_path.exists():
+            new_path.touch()
+            with open(new_path, 'w') as f:
+                f.write('import pandas as pd\n\n')
+                f.write(formats.read_code(path) + '\n')
+                f.write(formats.read_df_head(path))
+        self.open_file(new_path)
+
+    def _download_remote_for_edit(self, panel: FilePanel, name: str) -> Path | None:
+        """Download a remote file for F4 editing, then switch the panel to the local copy."""
+        conn = panel.remote_conn
+        remote_key = f"{panel.remote_path}/{name}" if panel.remote_path else name
+        dest_dir = Path(tempfile.gettempdir()) / "pandas_commander_remote" / conn.name
+        try:
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            dest = dest_dir / name
+            remote_backends.download(conn, remote_key, dest)
+        except Exception as exc:  # noqa: BLE001 - surface any backend/auth/network error
+            self.notify(f"Download failed: {exc}", severity="error")
+            return None
+        panel.set_local_drive(str(dest_dir))
+        self.notify(f"Downloaded '{name}' and switched to local drive.")
+        return dest
 
     # -------------------------------------------------------- file panel event
     @on(FilePanel.FileSelected)
@@ -433,12 +497,40 @@ class PandasCommander(App):
             return
         cwd = self.active_panel.path if self.active_panel else Path.cwd()
 
-        def done(_: None) -> None:
+        def done(returncode: int | None) -> None:
+            self.command_history.record(cmd, str(cwd), returncode)
+            self._add_to_pool(cmd)
             self.refresh_panels()
             if self.active_panel:
                 self.active_panel.query_one(DataTable).focus()
 
         self.push_screen(CommandOutputScreen(cmd, cwd), done)
+
+    def action_cmd_snippets(self) -> None:
+        """Ctrl+F: filterable picker of curated data one-liners; fills #cmdline."""
+        cmdline = self.query_one("#cmdline", Input)
+
+        def done(chosen: str | None) -> None:
+            if chosen:
+                cmdline.value = chosen
+                cmdline.action_end()
+            cmdline.focus()
+
+        self.push_screen(CommandSnippetPickerScreen(initial_filter=cmdline.value.strip()), done)
+
+    def action_cmd_history(self) -> None:
+        """F12: atuin-style picker over recently run commands; fills #cmdline."""
+        cmdline = self.query_one("#cmdline", Input)
+
+        def done(chosen: str | None) -> None:
+            if chosen:
+                cmdline.value = chosen
+                cmdline.action_end()
+            cmdline.focus()
+
+        self.push_screen(
+            CommandHistoryPickerScreen(self.command_history, initial_filter=cmdline.value.strip()), done
+        )
 
     # ------------------------------------------------------------ open / recent
     def open_file(self, path: Path) -> None:

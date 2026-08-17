@@ -11,8 +11,9 @@ from pathlib import Path
 import contextlib
 
 
-class CommandOutputScreen(ModalScreen[None]):
-    """Runs a shell command and streams its stdout/stderr live; closable any time."""
+class CommandOutputScreen(ModalScreen[int | None]):
+    """Runs a shell command and streams its stdout/stderr live; closable any time.
+    Dismisses with the process exit code, or None if it never completed."""
 
     CSS = """
     CommandOutputScreen { align: center middle; }
@@ -43,6 +44,7 @@ class CommandOutputScreen(ModalScreen[None]):
         self.command = command
         self.cwd = cwd
         self._process: asyncio.subprocess.Process | None = None
+        self._returncode: int | None = None
 
     def compose(self) -> ComposeResult:
         with Vertical(id="cmd-dialog"):
@@ -72,6 +74,7 @@ class CommandOutputScreen(ModalScreen[None]):
                     break
                 log.write(line.decode(errors="replace").rstrip("\n"))
             returncode = await process.wait()
+            self._returncode = returncode
             status.update(f"Exited with code {returncode}  (Esc to close)")
         except Exception as exc:  # noqa: BLE001
             log.write(f"Error: {exc}")
@@ -83,4 +86,4 @@ class CommandOutputScreen(ModalScreen[None]):
         if self._process is not None and self._process.returncode is None:
             with contextlib.suppress(ProcessLookupError):
                 self._process.kill()
-        self.dismiss(None)
+        self.dismiss(self._returncode)
