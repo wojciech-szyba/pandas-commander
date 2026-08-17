@@ -145,9 +145,8 @@ class PandasCommander(App):
         Binding("f8", "delete", "Delete"),
         Binding("f3", "copy_file", "Copy"),
         Binding("f9", "move_file", "Move"),
-        Binding("f11", "download_file", "Download"),
+        Binding("f10", "download_file", "Download"),
         Binding("ctrl+l", "focus_cmd", "Cmd"),
-        Binding("f10", "quit", "Quit"),
         Binding("ctrl+q", "quit", "Quit"),
     ]
 
