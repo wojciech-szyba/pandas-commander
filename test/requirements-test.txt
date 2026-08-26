@@ -1,0 +1,9 @@
+# Test-only dependencies. Install the app's own requirements.txt first
+# (repo root), then this file:
+#
+#   pip install -r requirements.txt -r test/requirements-test.txt
+#
+pytest>=8.0
+pytest-asyncio>=0.24
+pytest-cov>=5.0
+pytest-timeout>=2.3
